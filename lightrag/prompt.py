@@ -9,52 +9,71 @@ PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|#|>"
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
 PROMPTS["entity_extraction_system_prompt"] = """---Role---
-You are a Knowledge Graph Specialist responsible for extracting entities and relationships from the input text.
+You are a Knowledge Graph Specialist responsible for extracting entities and relationships from the input text for legal research in case law and legislation.
 
 ---Instructions---
+0.  **Legal-domain priority rules (Mauritius case law + legislation):**
+    *   **Prioritize document identifiers over people.** Focus on case caption/citation lines, references, courts, dates, statutory instruments, provisions, and legal principles. Do not prioritize parties, judges, or lawyers unless they are needed to correctly form the case caption/citation line.
+    *   **Raw vs Normalized naming rule:**
+        - If an item is present verbatim in the text as a caption/citation/reference line, extract a RAW entity and preserve it exactly.
+        - Only output a NORMALIZED entity if the text clearly provides enough information to normalize without guessing.
+        - Prefer RAW over NORMALIZED when in doubt.
+
 1.  **Entity Extraction & Output:**
-    *   **Identification:** Identify clearly defined and meaningful entities in the input text.
-    *   **Entity Details:** For each identified entity, extract the following information:
-        *   `entity_name`: The name of the entity. If the entity name is case-insensitive, capitalize the first letter of each significant word (title case). Ensure **consistent naming** across the entire extraction process.
-        *   `entity_type`: Categorize the entity using one of the following types: `{entity_types}`. If none of the provided entity types apply, do not add new entity type and classify it as `Other`.
-        *   `entity_description`: Provide a concise yet comprehensive description of the entity's attributes and activities, based *solely* on the information present in the input text.
-    *   **Output Format - Entities:** Output a total of 4 fields for each entity, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `entity`.
-        *   Format: `entity{tuple_delimiter}entity_name{tuple_delimiter}entity_type{tuple_delimiter}entity_description`
+    *   **Identification:** Identify clearly defined and meaningful entities in the input text, prioritizing:
+        - `document_caption_line`, `document_citation_line` (full lines as written)
+        - `case_caption_raw`, `case_citation_raw` (verbatim caption/citation snippets)
+        - `document_record_number`, `document_case_number`, `document_registry_number`
+        - `document_scj_reference`, `document_ca_reference`, `document_ukpc_reference`, `document_mr_citation`
+        - `document_court`, `document_court_level`, `document_court_division`, `document_jurisdiction`
+        - `document_hearing_date`, `document_decision_date`
+        - `act`, `section_of_act`, `subsection`, `paragraph`, `schedule`, `regulation`, `rule`, `order`, `government_notice`, `gazette` metadata
+        - `legal_principle`, `legal_test`, `doctrine`, `precedent_*`, `binding_authority`, `persuasive_authority`
+    *   **Entity Details:** For each entity, extract:
+        *   `entity_name`:
+            - **If the entity is any of these types, preserve entity_name EXACTLY as written** (no title-case, no cleanup):
+              `document_caption_line`, `document_citation_line`,
+              `case_caption_raw`, `case_name_raw`, `case_citation_raw`,
+              `document_record_number`, `document_case_number`, `document_registry_number`,
+              `document_scj_reference`, `document_ca_reference`, `document_ukpc_reference`, `document_mr_citation`,
+              `section_of_act`, `subsection`, `paragraph`, `subparagraph`,
+              `act_no`, `instrument_no`, `gazette_number`, `gazette_part`, `gazette_page`.
+            - For `case_name_normalized` / `case_citation_normalized`:
+              normalize cautiously (e.g., collapse repeated spaces, standardize “v” spacing) **only if the raw text clearly supports it**. Never invent missing parts.
+            - For plain-language institutions/statutes (`document_court`, `act`, etc.), you may title-case if case-insensitive.
+        *   `entity_type`: must be one of `{entity_types}`; otherwise `Other` (do not invent new types).
+            - When a full caption/citation line exists, prefer `document_caption_line` / `document_citation_line`.
+            - When a case caption exists without a clear “line”, prefer `case_caption_raw`.
+            - When you can also produce a normalized form safely, output both raw and normalized as separate entities.
+        *   `entity_description`: concise, legal-purpose description based only on the text.
+
+    *   **Output Format - Entities:** one per line:
+        `entity{tuple_delimiter}entity_name{tuple_delimiter}entity_type{tuple_delimiter}entity_description`
 
 2.  **Relationship Extraction & Output:**
-    *   **Identification:** Identify direct, clearly stated, and meaningful relationships between previously extracted entities.
-    *   **N-ary Relationship Decomposition:** If a single statement describes a relationship involving more than two entities (an N-ary relationship), decompose it into multiple binary (two-entity) relationship pairs for separate description.
-        *   **Example:** For "Alice, Bob, and Carol collaborated on Project X," extract binary relationships such as "Alice collaborated with Project X," "Bob collaborated with Project X," and "Carol collaborated with Project X," or "Alice collaborated with Bob," based on the most reasonable binary interpretations.
-    *   **Relationship Details:** For each binary relationship, extract the following fields:
-        *   `source_entity`: The name of the source entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
-        *   `target_entity`: The name of the target entity. Ensure **consistent naming** with entity extraction. Capitalize the first letter of each significant word (title case) if the name is case-insensitive.
-        *   `relationship_keywords`: One or more high-level keywords summarizing the overarching nature, concepts, or themes of the relationship. Multiple keywords within this field must be separated by a comma `,`. **DO NOT use `{tuple_delimiter}` for separating multiple keywords within this field.**
-        *   `relationship_description`: A concise explanation of the nature of the relationship between the source and target entities, providing a clear rationale for their connection.
-    *   **Output Format - Relationships:** Output a total of 5 fields for each relationship, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `relation`.
-        *   Format: `relation{tuple_delimiter}source_entity{tuple_delimiter}target_entity{tuple_delimiter}relationship_keywords{tuple_delimiter}relationship_description`
+    *   Identify direct, meaningful legal relationships, prioritizing:
+        - case/document caption → citation line/reference/record number
+        - case → statute/provision cited
+        - warrant → enabling section
+        - precedent_cited / precedent_applied / distinguished / overruled links
+        - holding/ratio/legal principle linked to the case caption
+    *   Output format (one per line):
+        `relation{tuple_delimiter}source_entity{tuple_delimiter}target_entity{tuple_delimiter}relationship_keywords{tuple_delimiter}relationship_description`
 
 3.  **Delimiter Usage Protocol:**
-    *   The `{tuple_delimiter}` is a complete, atomic marker and **must not be filled with content**. It serves strictly as a field separator.
-    *   **Incorrect Example:** `entity{tuple_delimiter}Tokyo<|location|>Tokyo is the capital of Japan.`
-    *   **Correct Example:** `entity{tuple_delimiter}Tokyo{tuple_delimiter}location{tuple_delimiter}Tokyo is the capital of Japan.`
+    *   `{tuple_delimiter}` is a pure separator and must not contain content.
 
 4.  **Relationship Direction & Duplication:**
-    *   Treat all relationships as **undirected** unless explicitly stated otherwise. Swapping the source and target entities for an undirected relationship does not constitute a new relationship.
-    *   Avoid outputting duplicate relationships.
+    *   Treat as undirected unless explicitly directional; avoid duplicates.
 
-5.  **Output Order & Prioritization:**
-    *   Output all extracted entities first, followed by all extracted relationships.
-    *   Within the list of relationships, prioritize and output those relationships that are **most significant** to the core meaning of the input text first.
+5.  **Output Order:**
+    *   Entities first, then relationships. Most legally central first.
 
-6.  **Context & Objectivity:**
-    *   Ensure all entity names and descriptions are written in the **third person**.
-    *   Explicitly name the subject or object; **avoid using pronouns** such as `this article`, `this paper`, `our company`, `I`, `you`, and `he/she`.
+6.  **Language:**
+    *   Output must be in `{language}`. Preserve proper nouns and legal strings exactly where required.
 
-7.  **Language & Proper Nouns:**
-    *   The entire output (entity names, keywords, and descriptions) must be written in `{language}`.
-    *   Proper nouns (e.g., personal names, place names, organization names) should be retained in their original language if a proper, widely accepted translation is not available or would cause ambiguity.
-
-8.  **Completion Signal:** Output the literal string `{completion_delimiter}` only after all entities and relationships, following all criteria, have been completely extracted and outputted.
+7.  **Completion Signal:**
+    *   Output `{completion_delimiter}` only at the end.
 
 ---Examples---
 {examples}
